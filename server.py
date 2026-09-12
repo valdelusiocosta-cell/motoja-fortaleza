@@ -177,6 +177,23 @@ def ride_dict(con, ride):
             "events":[{"event":e["event"],"detail":e["detail"],"createdAt":e["created_at"]} for e in events]}
 
 
+def offer_dict(con, ride):
+    """Return the passenger-safe ride plus the driver's pre-acceptance earnings."""
+    result = ride_dict(con, ride)
+    if not result:
+        return None
+    config = con.execute("SELECT commission FROM fare_config WHERE id=1").fetchone()
+    commission = float(config[0]) if config else 0.20
+    gross = float(ride["fare"])
+    result["offer"] = {
+        "gross": round(gross, 2),
+        "commission": commission,
+        "netEarnings": round(gross * (1 - commission), 2),
+        "currency": "BRL",
+    }
+    return result
+
+
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
@@ -263,8 +280,12 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/driver/offers":
             if user["role"] != "driver": return self.send_json(403,{"error":"Área exclusiva do motorista."})
             with db() as con:
+                profile = con.execute("SELECT approval_status,online FROM driver_profiles WHERE user_id=?", (user["id"],)).fetchone()
+                # Dispatch is intentionally local/demo, but still respects the same gate as accept.
+                if not profile or profile["approval_status"] != "approved" or not profile["online"]:
+                    return self.send_json(200, [])
                 rows=con.execute("SELECT * FROM rides WHERE status='searching' ORDER BY created_at DESC LIMIT 30").fetchall()
-                return self.send_json(200,[ride_dict(con,r) for r in rows])
+                return self.send_json(200,[offer_dict(con,r) for r in rows])
         if path == "/api/driver/earnings":
             if user["role"] != "driver": return self.send_json(403,{"error":"Área exclusiva do motorista."})
             with db() as con:
