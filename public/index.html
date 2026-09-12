@@ -22,6 +22,23 @@
         <form id="loginForm"><h2>Bem-vindo de volta</h2><p class="muted">Use telefone ou e-mail para entrar.</p><label for="loginIdentity">E-mail ou telefone<input id="loginIdentity" required placeholder="voce@email.com"></label><label for="loginPassword">Senha<input id="loginPassword" required type="password" placeholder="mínimo 6 caracteres"></label><button class="btn primary" type="submit">Entrar</button><div class="demo-box"><b>Acessos de demonstração</b><small>Senha: <code>demo1234</code></small><div class="demo-buttons"><button type="button" data-demo="passenger">Passageiro</button><button type="button" data-demo="driver">Motorista</button><button type="button" data-demo="admin">Admin</button></div></div></form>
         <form id="signupForm" class="hidden"><h2>Comece agora</h2><p class="muted">Cadastro local de demonstração — OTP real será integrado em produção.</p><label for="signupName">Nome completo<input id="signupName" required placeholder="Seu nome"></label><label for="signupPhone">Telefone<input id="signupPhone" required placeholder="(85) 9 0000-0000"></label><label for="signupEmail">E-mail<input id="signupEmail" required type="email" placeholder="voce@email.com"></label><label for="signupPassword">Senha<input id="signupPassword" required type="password" minlength="6" placeholder="mínimo 6 caracteres"></label><label for="signupRole">Quero usar o MotoJá como<select id="signupRole"><option value="passenger">Passageiro</option><option value="driver">Motorista</option></select></label><button class="btn primary" type="submit">Criar conta</button></form>
       </div>
+      <section class="role-showcase" aria-label="Produtos do MotoJá">
+        <article class="role-tile role-passenger">
+          <div class="role-tile-head"><span class="role-mark">P</span><div><strong>Passageiro</strong><small>Viaje com segurança</small></div><span class="role-arrow">↗</span></div>
+          <div class="mini-device"><div class="mini-device-bar"><span>MOTOJÁ</span><b>⌁</b></div><div class="mini-map"><i class="mini-pin blue">●</i><i class="mini-route blue"></i><i class="mini-pin white">●</i></div><div class="mini-bottom"><b>Para onde vamos?</b><span>Solicite sua moto em poucos toques</span><em>R$ 7,50</em></div></div>
+          <div class="role-tile-foot"><span>Preço antes de pedir</span><span>Motoristas verificados</span></div>
+        </article>
+        <article class="role-tile role-driver">
+          <div class="role-tile-head"><span class="role-mark">M</span><div><strong>Mototaxista</strong><small>Mais liberdade, mais ganhos</small></div><span class="role-arrow">↗</span></div>
+          <div class="mini-device"><div class="mini-device-bar"><span>ÁREA DO MOTORISTA</span><b>⌁</b></div><div class="mini-driver-stat"><small>Ganhos de hoje</small><strong>R$ 248,60</strong><span>12 corridas · ★ 4,9</span></div><div class="mini-offer"><span>Nova corrida</span><b>R$ 8,50</b><button type="button" data-demo="driver">Aceitar</button></div></div>
+          <div class="role-tile-foot"><span>Ganhos transparentes</span><span>Você no controle</span></div>
+        </article>
+        <article class="role-tile role-admin">
+          <div class="role-tile-head"><span class="role-mark">A</span><div><strong>Administrativo</strong><small>Gestão inteligente</small></div><span class="role-arrow">↗</span></div>
+          <div class="mini-device"><div class="mini-device-bar"><span>PAINEL OPERACIONAL</span><b>⌁</b></div><div class="mini-dashboard"><div><small>Corridas hoje</small><strong>327</strong><i></i></div><div><small>Motoristas</small><strong>84</strong><i></i></div><div><small>Em operação</small><strong>78%</strong><i></i></div></div><div class="mini-activity"><span></span><span></span><span></span><span></span><span></span></div></div>
+          <div class="role-tile-foot"><span>Mais controle</span><span>Dados em tempo real</span></div>
+        </article>
+      </section>
     </section>
 
     <section id="appView" class="hidden">
