@@ -4,7 +4,17 @@ MVP executável de mobilidade urbana por motocicleta para Fortaleza e Região Me
 
 > Este é um ambiente de desenvolvimento/demonstração. Ele não deve ser usado para transportar passageiros reais antes das integrações, validações legais e controles de segurança da lista ao final.
 
-## O que está implementado
+## Escopo de desenvolvimento concluído
+
+A entrega local cobre os três produtos do MVP em uma única interface responsiva, sem remover os fluxos existentes de API/SQLite:
+
+- **Entrada por papel:** escolha de passageiro ou mototaxista antes do login/cadastro, contas demo e navegação curta por área.
+- **Identidade visual de referência:** produto mobile-first em fundo escuro, cartões compactos e temas por papel — passageiro em ciano/azul, motorista em verde e administração em roxo — com contraste e foco visível.
+- **Passageiro:** home/cotação/solicitação, acompanhamento da corrida com linha de status, identificação do motorista, cancelamento, compartilhar, emergência, avaliação, histórico, perfil, carteira e suporte placeholder.
+- **Motorista:** estado online/offline com bloqueio de despacho quando não aprovado/offline, ofertas com origem, destino, distância, bruto, comissão e líquido antes do aceite, operação aceitar/iniciar/finalizar, documentos e ganhos.
+- **Administração:** indicadores, corridas, motoristas/documentos, usuários, tarifas/comissão e incidentes com ações de aprovação, suspensão e resolução.
+- **Qualidade de interface:** layout responsivo para celular, rótulos associados aos campos, `aria-live`, foco de teclado, `aria-pressed`, estados de carregamento/vazio/erro e mensagens de retry.
+- **API preservada:** a máquina `searching → accepted → in_progress → finished` (ou `cancelled`) e os endpoints existentes continuam funcionando; a oferta de motorista agora informa o líquido calculado localmente.
 
 ### Passageiro
 
@@ -95,7 +105,7 @@ Todas as rotas protegidas usam `Authorization: Bearer <token>`.
 | POST | `/api/rides/:id/share` | Registrar compartilhamento placeholder |
 | POST | `/api/rides/:id/emergency` | Registrar incidente de emergência |
 | GET/POST | `/api/driver/profile`, `/api/driver/online` | Perfil/status do motorista |
-| GET | `/api/driver/offers` | Ofertas de corridas abertas |
+| GET | `/api/driver/offers` | Ofertas abertas para motorista aprovado e online; inclui `offer.gross`, `offer.commission` e `offer.netEarnings` |
 | GET | `/api/driver/earnings` | Ganhos e histórico |
 | POST | `/api/driver/documents` | Enviar metadata de documento |
 | GET | `/api/admin/summary` | Indicadores operacionais |
@@ -127,8 +137,14 @@ python3 test_mvp.py
 Resultado esperado:
 
 ```text
-OK: health, auth, quote, ride state machine, driver and admin endpoints
+OK: health, auth, quote, role-gated driver offers, ride state machine, driver and admin endpoints
 ```
+
+## Bloqueadores explícitos antes de produção
+
+Este MVP ainda **não está pronto para transportar passageiros reais**. O lançamento fica bloqueado até concluir: (1) validação jurídica e autorização municipal/nacional, seguro e protocolo de segurança; (2) mapas/rotas/ETA e despacho geográfico em tempo real; (3) OTP, CPF, prova de vida e antifraude; (4) upload privado/OCR e revisão de documentos; (5) gateway Pix/cartão com autorização, estorno, split, conciliação e repasse; (6) push/SMS e canais de contato mascarados; (7) localização do motorista, navegação e emergência real; (8) TLS, segredos, rate limit, MFA/RBAC, auditoria e LGPD; (9) PostgreSQL/PostGIS, observabilidade, backup e recuperação; e (10) testes e operação dos apps Android/iOS.
+
+Os comportamentos locais de cotação, emergência, compartilhamento, documentos e pagamentos são deliberadamente **demonstrações/placeholder**. Não publicar nem usar as contas demo em produção.
 
 ## Checklist para produção
 
