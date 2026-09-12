@@ -44,8 +44,9 @@ A entrega local cobre os três produtos do MVP em uma única interface responsiv
 
 - API REST JSON com validação de entrada, autenticação por token de sessão, autorização por papel e transições explícitas:
   `searching → accepted → in_progress → finished` ou `cancelled`.
-- SQLite com tabelas de usuários, perfis, documentos, tarifas, corridas, eventos, avaliações, incidentes e sessões.
+- SQLite por padrão, ou PostgreSQL + PostGIS quando `DATABASE_URL` estiver configurada, com tabelas de usuários, perfis, documentos, tarifas, corridas, eventos, avaliações, incidentes e sessões.
 - `server.py` serve também os arquivos estáticos de `public/`.
+- `db/schema.postgis.sql` preparado para a migração de produção para PostgreSQL + PostGIS, com extensão espacial, UUIDs, índices GiST e validação de coordenadas WGS84.
 - Adaptadores claramente isolados para cotação/rotas e marcadores de integração futura.
 
 ## Como executar
@@ -66,6 +67,22 @@ PORT=3100 MOTOJA_DB=/caminho/motoja.sqlite3 python3 server.py
 ```
 
 A base `motoja.sqlite3` é criada automaticamente no primeiro início. Para reiniciar o ambiente local, pare o servidor e remova esse arquivo.
+
+### PostgreSQL + PostGIS
+
+Quando `DATABASE_URL` estiver configurada, o servidor usa PostgreSQL e aplica automaticamente `db/schema.app.postgis.sql` na inicialização. A dependência de produção está declarada em `requirements.txt`.
+
+```bash
+DATABASE_URL='postgresql://usuario:senha@host:5432/motoja' python3 server.py
+```
+
+As contas demo **não são criadas por padrão** nesse modo. Para um ambiente de homologação, habilite-as explicitamente:
+
+```bash
+MOTOJA_SEED_DEMO=1 DATABASE_URL='postgresql://usuario:senha@host:5432/motoja' python3 server.py
+```
+
+O arquivo `db/schema.postgis.sql` contém o modelo espacial mínimo fornecido; `db/schema.app.postgis.sql` acrescenta as tabelas e colunas necessárias para todos os endpoints atuais da API.
 
 ### Contas de demonstração
 
