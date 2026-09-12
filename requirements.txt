@@ -1,0 +1,3 @@
+# Dependência opcional para produção PostgreSQL + PostGIS.
+# O MVP local continua funcionando apenas com a biblioteca padrão e SQLite.
+psycopg[binary]>=3.2,<4
