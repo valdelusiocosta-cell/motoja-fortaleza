@@ -46,6 +46,11 @@ def main():
         _, driver = call("/api/auth/login", "POST", {"identity": "motorista@demo.motoja.local", "password": "demo1234"})
         driver_token = driver["token"]
         assert call("/api/driver/online", "POST", {"online": True}, driver_token)[0] == 200
+        code, offers = call("/api/driver/offers", token=driver_token)
+        assert code == 200 and offers and offers[0]["offer"]["netEarnings"] < offers[0]["offer"]["gross"]
+        assert call("/api/driver/online", "POST", {"online": False}, driver_token)[0] == 200
+        assert call("/api/driver/offers", token=driver_token)[1] == []
+        assert call("/api/driver/online", "POST", {"online": True}, driver_token)[0] == 200
         for action, expected in (("accept", "accepted"), ("start", "in_progress"), ("finish", "finished")):
             code, ride = call(f"/api/rides/{ride_id}/{action}", "POST", {}, driver_token)
             assert code == 200 and ride["status"] == expected
@@ -54,7 +59,7 @@ def main():
         assert code == 200
         summary = call("/api/admin/summary", token=admin["token"])
         assert summary[0] == 200 and summary[1]["finishedRides"] == 1
-        print("OK: health, auth, quote, ride state machine, driver and admin endpoints")
+        print("OK: health, auth, quote, role-gated offers, ride state machine, driver and admin endpoints")
 
 
 if __name__ == "__main__":
