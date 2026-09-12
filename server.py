@@ -8,6 +8,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 import datetime as dt
+import decimal
 import hashlib
 import hmac
 import json
@@ -16,12 +17,64 @@ import re
 import secrets
 import sqlite3
 import threading
+import uuid
+
+try:
+    import psycopg
+    from psycopg.rows import dict_row
+except ImportError:  # SQLite/local mode does not require psycopg.
+    psycopg = None
+    dict_row = None
 
 ROOT = Path(__file__).parent
 PUBLIC = ROOT / "public"
+DB_URL = os.environ.get("DATABASE_URL", "").strip()
 DB_PATH = Path(os.environ.get("MOTOJA_DB", ROOT / "motoja.sqlite3"))
 PORT = int(os.environ.get("PORT", "3000"))
 DB_LOCK = threading.RLock()
+POSTGRES_SCHEMA = ROOT / "db" / "schema.app.postgis.sql"
+INTEGRITY_ERRORS = (sqlite3.IntegrityError,) + ((psycopg.IntegrityError,) if psycopg else ())
+
+
+class PostgresConnection:
+    """Small qmark-compatible adapter so the existing API can use PostgreSQL."""
+
+    def __init__(self, url):
+        if psycopg is None:
+            raise RuntimeError("PostgreSQL requer a dependência psycopg[binary].")
+        self.raw = psycopg.connect(url, row_factory=dict_row)
+
+    @staticmethod
+    def _sql(sql):
+        return sql.replace("?", "%s")
+
+    def execute(self, sql, params=()):
+        return self.raw.execute(self._sql(sql), params)
+
+    def executescript(self, sql):
+        return self.raw.execute(sql)
+
+    def __enter__(self):
+        self.raw.__enter__()
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return self.raw.__exit__(exc_type, exc, tb)
+
+
+def json_default(value):
+    if isinstance(value, (dt.datetime, dt.date)):
+        return value.isoformat()
+    if isinstance(value, (decimal.Decimal,)):
+        return float(value)
+    if isinstance(value, uuid.UUID):
+        return str(value)
+    raise TypeError(f"Tipo não serializável: {type(value).__name__}")
+
+
+def first_value(row):
+    return next(iter(row.values())) if isinstance(row, dict) else row[0]
+
 
 STATUSES = ("searching", "accepted", "in_progress", "finished", "cancelled")
 TRANSITIONS = {
@@ -37,6 +90,8 @@ def now():
 
 
 def db():
+    if DB_URL:
+        return PostgresConnection(DB_URL)
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     con = sqlite3.connect(DB_PATH, timeout=15)
     con.row_factory = sqlite3.Row
@@ -60,6 +115,26 @@ def verify_password(password, stored):
 
 
 def init_db():
+    if DB_URL:
+        with DB_LOCK, db() as con:
+            con.executescript(POSTGRES_SCHEMA.read_text(encoding="utf-8"))
+            if os.environ.get("MOTOJA_SEED_DEMO", "0") == "1":
+                seed = [
+                    ("Passageiro Demo", "85999990001", "passageiro@demo.motoja.local", "passenger", "active"),
+                    ("Motorista Demo", "85999990002", "motorista@demo.motoja.local", "driver", "active"),
+                    ("Admin Demo", "85999990003", "admin@demo.motoja.local", "admin", "active"),
+                ]
+                for name, phone, email, role, status in seed:
+                    con.execute("""INSERT INTO users(name,phone,email,password_hash,role,status)
+                                   VALUES(?,?,?,?,?,?) ON CONFLICT (email) DO NOTHING""",
+                                (name, phone, email, hash_password("demo1234"), role, status))
+                driver = con.execute("SELECT id FROM users WHERE email=?", ("motorista@demo.motoja.local",)).fetchone()
+                if driver:
+                    con.execute("""INSERT INTO driver_profiles(user_id,approval_status,online,cpf,cnh,ear,vehicle_model,vehicle_plate,vehicle_year)
+                                  VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT (user_id) DO NOTHING""",
+                                (driver["id"], "approved", False, "000.000.000-00", "00000000000", True, "Honda CG 160", "MJA-2026", 2024))
+        return
+
     with DB_LOCK, db() as con:
         con.executescript("""
         CREATE TABLE IF NOT EXISTS users (
@@ -143,20 +218,20 @@ def quote(origin, destination):
     # Until a route provider is configured, a bounded deterministic estimate is explicit in UI.
     distance = min(35.0, max(2.0, 3.5 + ((len(origin) * 3 + len(destination)) % 145) / 10))
     duration = max(5, round(distance * 3.1))
-    fare = max(row[3], row[0] + distance * row[1] + duration * row[2])
+    fare = max(float(row["minimum"]), float(row["base"]) + distance * float(row["per_km"]) + duration * float(row["per_min"]))
     return {"distanceKm": round(distance, 1), "durationMin": duration, "fare": round(fare, 2), "currency": "BRL", "estimate": True}
 
 
 def user_dict(row):
     if not row: return None
-    return {"id": row["id"], "name": row["name"], "phone": row["phone"], "email": row["email"], "role": row["role"], "status": row["status"], "createdAt": row["created_at"]}
+    return {"id": str(row["id"]), "name": row["name"], "phone": row["phone"], "email": row["email"], "role": row["role"], "status": row["status"], "createdAt": row["created_at"]}
 
 
 def driver_dict(con, user_id):
     row = con.execute("SELECT u.*,p.* FROM users u JOIN driver_profiles p ON p.user_id=u.id WHERE u.id=?", (user_id,)).fetchone()
     if not row: return None
     docs = con.execute("SELECT id,kind,filename,status,submitted_at,review_note FROM documents WHERE driver_id=? ORDER BY id DESC", (user_id,)).fetchall()
-    return {"id": row["id"], "name": row["name"], "phone": row["phone"], "email": row["email"], "role": "driver", "status": row["status"],
+    return {"id": str(row["id"]), "name": row["name"], "phone": row["phone"], "email": row["email"], "role": "driver", "status": row["status"],
             "approvalStatus": row["approval_status"], "online": bool(row["online"]), "rating": row["rating"], "cpf": row["cpf"], "cnh": row["cnh"], "ear": bool(row["ear"]),
             "vehicle": {"model": row["vehicle_model"], "plate": row["vehicle_plate"], "year": row["vehicle_year"]},
             "documents": [{"id":d["id"],"kind":d["kind"],"filename":d["filename"],"status":d["status"],"submittedAt":d["submitted_at"],"reviewNote":d["review_note"]} for d in docs]}
@@ -170,8 +245,8 @@ def ride_dict(con, ride):
     events = con.execute("SELECT event,detail,created_at FROM ride_events WHERE ride_id=? ORDER BY id", (ride["id"],)).fetchall()
     return {"id": ride["id"], "status": ride["status"], "origin": ride["origin"], "destination": ride["destination"],
             "paymentMethod": ride["payment_method"], "quote": {"distanceKm":ride["distance_km"],"durationMin":ride["duration_min"],"fare":ride["fare"],"currency":"BRL","estimate":True},
-            "passenger": dict(passenger) if passenger else None,
-            "driver": ({"id":driver["id"],"name":driver["name"],"phone":driver["phone"],"rating":4.9,"motorcycle":"Honda CG 160","plate":"a confirmar"} if driver else None),
+            "passenger": ({"id": str(passenger["id"]), "name": passenger["name"], "phone": passenger["phone"]} if passenger else None),
+            "driver": ({"id": str(driver["id"]),"name":driver["name"],"phone":driver["phone"],"rating":4.9,"motorcycle":"Honda CG 160","plate":"a confirmar"} if driver else None),
             "createdAt":ride["created_at"], "acceptedAt":ride["accepted_at"], "startedAt":ride["started_at"], "finishedAt":ride["finished_at"],
             "cancelReason":ride["cancel_reason"], "rating":dict(rating) if rating else None,
             "events":[{"event":e["event"],"detail":e["detail"],"createdAt":e["created_at"]} for e in events]}
@@ -183,7 +258,7 @@ def offer_dict(con, ride):
     if not result:
         return None
     config = con.execute("SELECT commission FROM fare_config WHERE id=1").fetchone()
-    commission = float(config[0]) if config else 0.20
+    commission = float(config["commission"]) if config else 0.20
     gross = float(ride["fare"])
     result["offer"] = {
         "gross": round(gross, 2),
@@ -205,7 +280,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
 
     def send_json(self, status, data):
-        raw = json.dumps(data, ensure_ascii=False).encode()
+        raw = json.dumps(data, ensure_ascii=False, default=json_default).encode()
         self.send_response(status); self.headers_common(); self.send_header("Content-Length", str(len(raw))); self.end_headers(); self.wfile.write(raw)
 
     def body(self):
@@ -232,7 +307,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         path = urlparse(self.path).path
         try:
-            if path == "/api/health": return self.send_json(200, {"ok":True,"service":"motoja-api","database":"sqlite","time":now()})
+            if path == "/api/health": return self.send_json(200, {"ok":True,"service":"motoja-api","database":"postgresql+postgis" if DB_URL else "sqlite","time":now()})
             if path.startswith("/api/"): return self.api_get(path)
             self.static(path)
         except PermissionError as e: self.send_json(401, {"error":str(e)})
@@ -246,7 +321,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(404, {"error":"Rota não encontrada."})
         except PermissionError as e: self.send_json(401, {"error":str(e)})
         except ValueError as e: self.send_json(400, {"error":str(e)})
-        except sqlite3.IntegrityError: self.send_json(409, {"error":"Registro já existe ou é inválido."})
+        except INTEGRITY_ERRORS: self.send_json(409, {"error":"Registro já existe ou é inválido."})
         except Exception as e: self.send_json(500, {"error":"Erro interno do servidor.","detail":str(e)})
 
     def static(self, path):
@@ -292,7 +367,9 @@ class Handler(BaseHTTPRequestHandler):
                 row=con.execute("SELECT COUNT(*) count,COALESCE(SUM(fare),0) gross FROM rides WHERE driver_id=? AND status='finished'",(user["id"],)).fetchone()
                 config=con.execute("SELECT commission FROM fare_config WHERE id=1").fetchone()
                 rides=con.execute("SELECT id,origin,destination,fare,finished_at FROM rides WHERE driver_id=? AND status='finished' ORDER BY finished_at DESC LIMIT 30",(user["id"],)).fetchall()
-                return self.send_json(200,{"rides":row["count"],"gross":round(row["gross"],2),"commission":config[0],"net":round(row["gross"]*(1-config[0]),2),"history":[dict(x) for x in rides]})
+                commission = float(config["commission"])
+                gross = float(row["gross"] or 0)
+                return self.send_json(200,{"rides":row["count"],"gross":round(gross,2),"commission":commission,"net":round(gross*(1-commission),2),"history":[dict(x) for x in rides]})
         if path == "/api/admin/summary": return self.admin_summary(user)
         if path == "/api/admin/users": return self.admin_users(user)
         if path == "/api/admin/drivers": return self.admin_drivers(user)
@@ -316,10 +393,10 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/support/incidents": return self.incident(data)
         m=re.fullmatch(r"/api/rides/([A-Za-z0-9_-]+)/(accept|start|finish|cancel|share|emergency|rate)",path)
         if m: return self.ride_action(m.group(1),m.group(2),data)
-        m=re.fullmatch(r"/api/admin/drivers/(\d+)/(approve|suspend)",path)
-        if m: return self.admin_driver_action(int(m.group(1)),m.group(2))
-        m=re.fullmatch(r"/api/admin/users/(\d+)/suspend",path)
-        if m: return self.admin_user_suspend(int(m.group(1)))
+        m=re.fullmatch(r"/api/admin/drivers/([A-Za-z0-9-]+)/(approve|suspend)",path)
+        if m: return self.admin_driver_action(m.group(1),m.group(2))
+        m=re.fullmatch(r"/api/admin/users/([A-Za-z0-9-]+)/suspend",path)
+        if m: return self.admin_user_suspend(m.group(1))
         m=re.fullmatch(r"/api/admin/incidents/(\d+)/resolve",path)
         if m: return self.admin_resolve_incident(int(m.group(1)))
         if path == "/api/admin/fare-config": return self.admin_fare(data)
@@ -333,7 +410,7 @@ class Handler(BaseHTTPRequestHandler):
         role=data.get("role","passenger")
         if role not in ("passenger","driver"): raise ValueError("Perfil inválido.")
         with DB_LOCK,db() as con:
-            cur=con.execute("INSERT INTO users(name,phone,email,password_hash,role,status,created_at) VALUES(?,?,?,?,?,?,?)",(name,phone,email,hash_password(password),role,"active",now())); uid=cur.lastrowid
+            uid=con.execute("INSERT INTO users(name,phone,email,password_hash,role,status,created_at) VALUES(?,?,?,?,?,?,?) RETURNING id",(name,phone,email,hash_password(password),role,"active",now())).fetchone()["id"]
             if role=="driver": con.execute("INSERT INTO driver_profiles(user_id,updated_at) VALUES(?,?)",(uid,now()))
             token=secrets.token_urlsafe(32); con.execute("INSERT INTO sessions(token,user_id,created_at) VALUES(?,?,?)",(token,uid,now())); row=con.execute("SELECT * FROM users WHERE id=?",(uid,)).fetchone()
         return self.send_json(201,{"token":token,"user":user_dict(row),"message":"Conta criada. Motoristas aguardam aprovação documental." if role=="driver" else "Conta criada."})
@@ -353,7 +430,7 @@ class Handler(BaseHTTPRequestHandler):
         q=quote(origin,destination); ride_id=secrets.token_hex(6)
         with DB_LOCK,db() as con:
             active=con.execute("SELECT id FROM rides WHERE passenger_id=? AND status IN ('searching','accepted','in_progress')",(user["id"],)).fetchone()
-            if active: return self.send_json(409,{"error":"Você já possui uma corrida ativa.","rideId":active[0]})
+            if active: return self.send_json(409,{"error":"Você já possui uma corrida ativa.","rideId":active["id"]})
             con.execute("INSERT INTO rides(id,passenger_id,origin,destination,payment_method,distance_km,duration_min,fare,status,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)",(ride_id,user["id"],origin,destination,payment,q["distanceKm"],q["durationMin"],q["fare"],"searching",now()))
             con.execute("INSERT INTO ride_events(ride_id,actor_id,event,detail,created_at) VALUES(?,?,?,?,?)",(ride_id,user["id"],"requested","Solicitação criada",now())); row=con.execute("SELECT * FROM rides WHERE id=?",(ride_id,)).fetchone()
         with db() as con: return self.send_json(201,ride_dict(con,row))
@@ -362,8 +439,8 @@ class Handler(BaseHTTPRequestHandler):
         user=self.auth(["driver"]); online=bool(data.get("online"))
         with DB_LOCK,db() as con:
             profile=con.execute("SELECT approval_status FROM driver_profiles WHERE user_id=?",(user["id"],)).fetchone()
-            if online and profile[0]!="approved": return self.send_json(409,{"error":"Seu cadastro ainda não foi aprovado pela administração."})
-            con.execute("UPDATE driver_profiles SET online=?,updated_at=? WHERE user_id=?",(int(online),now(),user["id"]))
+            if online and profile["approval_status"]!="approved": return self.send_json(409,{"error":"Seu cadastro ainda não foi aprovado pela administração."})
+            con.execute("UPDATE driver_profiles SET online=?,updated_at=? WHERE user_id=?",(online,now(),user["id"]))
             return self.send_json(200,driver_dict(con,user["id"]))
 
     def driver_document(self,data):
@@ -407,7 +484,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def incident(self,data):
         user=self.auth(); ride_id=data.get("rideId"); typ=clean(data.get("type") or "support","tipo"); description=clean(data.get("description"),"descrição",max_len=1000)
-        with DB_LOCK,db() as con: cur=con.execute("INSERT INTO incidents(ride_id,reporter_id,type,description,created_at) VALUES(?,?,?,?,?)",(ride_id,user["id"],typ,description,now())); return self.send_json(201,{"id":cur.lastrowid,"status":"open","message":"Chamado registrado para a equipe de suporte."})
+        with DB_LOCK,db() as con: incident_id=con.execute("INSERT INTO incidents(ride_id,reporter_id,type,description,created_at) VALUES(?,?,?,?,?) RETURNING id",(ride_id,user["id"],typ,description,now())).fetchone()["id"]; return self.send_json(201,{"id":incident_id,"status":"open","message":"Chamado registrado para a equipe de suporte."})
 
     def admin_guard(self,user):
         if user["role"]!="admin": raise PermissionError("Área exclusiva da administração.")
@@ -415,17 +492,21 @@ class Handler(BaseHTTPRequestHandler):
     def admin_summary(self,user):
         self.admin_guard(user)
         with db() as con:
-            def n(q): return con.execute(q).fetchone()[0]
+            def n(q): return first_value(con.execute(q).fetchone())
             return self.send_json(200,{"users":n("SELECT COUNT(*) FROM users WHERE role='passenger'"),"drivers":n("SELECT COUNT(*) FROM users WHERE role='driver'"),"pendingDrivers":n("SELECT COUNT(*) FROM driver_profiles WHERE approval_status='pending'"),"activeRides":n("SELECT COUNT(*) FROM rides WHERE status IN ('searching','accepted','in_progress')"),"finishedRides":n("SELECT COUNT(*) FROM rides WHERE status='finished'"),"openIncidents":n("SELECT COUNT(*) FROM incidents WHERE status='open'")})
 
     def admin_users(self,user):
         self.admin_guard(user); qs=parse_qs(urlparse(self.path).query); role=qs.get("role",[None])[0]
         with db() as con:
-            rows=con.execute("SELECT id,name,phone,email,role,status,created_at FROM users WHERE (? IS NULL OR role=?) ORDER BY id DESC",(role,role)).fetchall(); return self.send_json(200,[user_dict(x) for x in rows])
+            if role:
+                rows=con.execute("SELECT id,name,phone,email,role,status,created_at FROM users WHERE role=? ORDER BY id DESC",(role,)).fetchall()
+            else:
+                rows=con.execute("SELECT id,name,phone,email,role,status,created_at FROM users ORDER BY id DESC").fetchall()
+            return self.send_json(200,[user_dict(x) for x in rows])
 
     def admin_drivers(self,user):
         self.admin_guard(user)
-        with db() as con: rows=con.execute("SELECT id FROM users WHERE role='driver' ORDER BY id DESC").fetchall(); return self.send_json(200,[driver_dict(con,x[0]) for x in rows])
+        with db() as con: rows=con.execute("SELECT id FROM users WHERE role='driver' ORDER BY id DESC").fetchall(); return self.send_json(200,[driver_dict(con,x["id"]) for x in rows])
 
     def admin_rides(self,user):
         self.admin_guard(user)
@@ -439,7 +520,7 @@ class Handler(BaseHTTPRequestHandler):
         user=self.auth(["admin"]); status="approved" if action=="approve" else "suspended"
         with DB_LOCK,db() as con:
             if not con.execute("SELECT id FROM users WHERE id=? AND role='driver'",(driver_id,)).fetchone(): return self.send_json(404,{"error":"Motorista não encontrado."})
-            con.execute("UPDATE driver_profiles SET approval_status=?,online=0,updated_at=? WHERE user_id=?",(status,now(),driver_id)); return self.send_json(200,{"ok":True,"approvalStatus":status})
+            con.execute("UPDATE driver_profiles SET approval_status=?,online=?,updated_at=? WHERE user_id=?",(status,False,now(),driver_id)); return self.send_json(200,{"ok":True,"approvalStatus":status})
 
     def admin_user_suspend(self,user_id):
         admin=self.auth(["admin"])
